@@ -11,6 +11,7 @@ from hmac import compare_digest
 import io
 import json
 import os
+import logging
 from html import escape
 from zoneinfo import ZoneInfo
 
@@ -18,8 +19,11 @@ import pandas as pd
 import streamlit as st
 
 from ai_analysis import analyze_fixture
+from diagnostics import describe_ai_failure
 from engine import combos_in_range, expected_value, flatten_row, shortlist, risk_tier
 from smart_paste import smart_parse, validated_preview
+
+logger = logging.getLogger("black_wolf")
 
 st.set_page_config(
     page_title="BLACK WOLF | Football Intelligence",
@@ -418,22 +422,45 @@ if st.button("3  ·  Verify & analyze with AI  →", type="primary", use_contain
                         client, model, match, datetime.now(ZoneInfo("Europe/Berlin")).isoformat(timespec="minutes"),
                         input_timezone=timezone,
                     ))
-                except Exception:
+                except Exception as exc:
+                    # Stop the batch after a failed API request to avoid more paid calls
+                    # while credentials, credit or configuration may be broken.
+                    message = describe_ai_failure(exc, model)
+                    logger.error("AI research failed: type=%s status=%s on fixture %s. No raw credentials logged.",
+                                 type(exc).__name__, getattr(exc, "status_code", "n/a"), i + 1)
                     output.append({
                         "game": f"{match['home']} – {match['away']}",
                         "kickoff": match["kickoff"], "verified": False, "status": "error",
                         "competition": "", "market": "", "market_type": "none",
                         "score": 0, "probability_pct": None, "odds": None,
                         "rationale": "", "recent_evidence": "", "team_news": "",
-                        "fixture_evidence": "", "risks": "AI request failed. Check model access, API credit, and Streamlit logs.",
+                        "fixture_evidence": "", "risks": message,
                         "sources": [],
                     })
-            progress.progress(1.0, text="Research completed")
+                    for unattempted in matches[i + 1:]:
+                        output.append({
+                            "game": f"{unattempted['home']} – {unattempted['away']}",
+                            "kickoff": unattempted["kickoff"], "verified": False,
+                            "status": "skipped", "competition": "", "market": "",
+                            "market_type": "none", "score": 0,
+                            "probability_pct": None, "odds": None,
+                            "rationale": "", "recent_evidence": "", "team_news": "",
+                            "fixture_evidence": "",
+                            "risks": "Skipped because an earlier AI request failed; fix the error before rerunning.",
+                            "sources": [],
+                        })
+                    break
+            progress.progress(1.0, text="Research stopped due to API error" if any(r["status"] == "error" for r in output) else "Research completed")
             st.session_state.analysis = output
             st.session_state.analysis_timezone = timezone
             st.session_state.analysis_label = f"{len(output)} fixtures • {datetime.now(ZoneInfo('Europe/Berlin')).strftime('%d %b %Y, %H:%M')}"
             st.session_state.run_id = st.session_state.get("run_id", 0) + 1
-            st.success(f"Research completed for {len(output)} matches. Check the evidence below.")
+            if any(r["status"] == "error" for r in output):
+                first_error = next(r for r in output if r["status"] == "error")
+                st.error(first_error["risks"])
+                st.caption("Research stopped after the first failure to avoid repeated API requests. Resolve the issue, then rerun.")
+            else:
+                st.success(f"Research completed for {len(output)} matches. Check the evidence below.")
     except (ValueError, UnicodeDecodeError, pd.errors.ParserError) as err:
         st.error(f"Unable to analyze fixture list: {err}")
 
@@ -460,9 +487,14 @@ scored = []
 for i, record in enumerate(st.session_state.analysis):
     is_verified = bool(record.get("verified"))
     score = int(record.get("score", 0))
-    label = "VERIFIED" if is_verified else "UNVERIFIED"
+    status = record.get("status")
+    label = "VERIFIED" if is_verified else "API ERROR" if status == "error" else "NOT ANALYZED" if status == "skipped" else "UNVERIFIED"
     with st.expander(f"{i+1:02d}   {record['game']}     ·     {label}     ·     {score}/25", expanded=i == 0):
-        if not is_verified:
+        if status == "error":
+            st.error(record.get("risks", "AI request failed."))
+        elif status == "skipped":
+            st.info("Not analyzed: earlier AI request failed. No additional API charge was attempted for this fixture.")
+        elif not is_verified:
             st.warning("Fixture not verified with cited sources. No market is eligible for the shortlist.")
         top_a, top_b = st.columns([1.4, 1])
         with top_a:
