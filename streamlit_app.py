@@ -1,7 +1,7 @@
-"""Football Strategy | deploy on Streamlit Community Cloud.
+"""BLACK WOLF — responsive, English-language Streamlit football research dashboard.
 
-All API calls occur server-side using an administrator-owned secret.
-There is no live bookmaker feed, no automatic wager placement, and no guarantee.
+Deployment: Streamlit Community Cloud, main file streamlit_app.py.
+No live bookmaker odds, betting execution, or guaranteed results.
 """
 from __future__ import annotations
 
@@ -10,39 +10,194 @@ from hmac import compare_digest
 import io
 import json
 import os
+from html import escape
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 
 from ai_analysis import analyze_fixture
-from engine import combos_in_range, expected_value, flatten_row, parse_schedule, shortlist
-
+from engine import combos_in_range, expected_value, flatten_row, parse_schedule, shortlist, risk_tier
 
 st.set_page_config(
-    page_title="Football Strategy AI | تحلیل فوتبال",
-    page_icon="⚽",
+    page_title="BLACK WOLF | Football Intelligence",
+    page_icon="◼",
     layout="wide",
     initial_sidebar_state="collapsed",
+    menu_items={"About": "BLACK WOLF — Evidence-led football match research. No guaranteed predictions."},
 )
 
-st.markdown("""<style>
-html, body, [data-testid="stApp"] { direction: rtl; }
-.stApp { background: radial-gradient(ellipse at top, #142940, #0b1726 60%); }
-.block-container { max-width: 1020px; padding-top: 1.25rem; padding-bottom: 3rem; }
-.stMarkdown, .stText, .stCaption, label, h1, h2, h3 { text-align: right; }
-[data-testid="stMetricValue"], [data-testid="stMetricDelta"], input[type="number"] { direction: ltr; text-align: left; }
-[data-testid="stSidebar"] { direction: rtl; }
-@media (max-width: 640px) {
-    .block-container { padding: 0.75rem 0.8rem 3rem; }
-    h1 { font-size: 1.6rem !important; }
-    [data-testid="stMetricValue"] { font-size: 1.35rem; }
+STYLE = """
+<style>
+/* Space Grotesk: same typeface as the supplied font; fetched from Google Fonts at runtime.
+   No font binary is embedded or stored in this public repository. */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&display=swap');
+:root {color-scheme: light;--bw-black:#0a0a0a;--bw-ink:#171717;--bw-muted:#686868;--bw-line:#dedede;--bw-soft:#f5f5f5;--bw-paper:#fff;
+--bw-low:#148447;--bw-low-bg:#e7f5ed;--bw-medium:#bf6905;--bw-medium-bg:#fff0d7;--bw-high:#c72a2a;--bw-high-bg:#fce8e8;}
+html,body,.stApp,[data-testid="stAppViewContainer"] {background:var(--bw-paper)!important;color:var(--bw-ink)!important;direction:ltr!important;}
+html,body,.stApp, .stMarkdown, p,h1,h2,h3,h4,h5,label,input,textarea,button,select, [data-testid="stMetricValue"], [data-testid="stWidgetLabel"] {
+ font-family:'Space Grotesk',Arial,sans-serif!important;
 }
-</style>""", unsafe_allow_html=True)
+[data-testid="stHeader"] {background:rgba(255,255,255,.96)!important;border-bottom:1px solid #ededed;}
+[data-testid="stDecoration"] {display:none;}
+[data-testid="stToolbar"], [data-testid="stToolbar"] * {color:#111!important;}
+.block-container {max-width:1150px;padding-top:1.1rem;padding-bottom:3.2rem;}
+.stMarkdown,.stText,.stCaption,label,h1,h2,h3,p {text-align:left;}
+[data-testid="stMarkdownContainer"] p,[data-testid="stMarkdownContainer"] li {line-height:1.55;}
+[data-testid="stMarkdownContainer"] h1,[data-testid="stMarkdownContainer"] h2,[data-testid="stMarkdownContainer"] h3,
+[data-testid="stWidgetLabel"] p {color:#111!important;}
+[data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] p,small {color:#666!important;}
+[data-testid="stWidgetLabel"] {color:#151515!important;font-weight:650!important;}
+[data-testid="stSidebar"] {background:#fafafa!important;border-right:1px solid var(--bw-line);}
+[data-testid="stSidebar"] *,[data-testid="stSidebar"] p {color:#161616!important;}
+[data-testid="stTextArea"] textarea,[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,[data-testid="stDateInput"] input,
+[data-testid="stSelectbox"] [data-baseweb="select"]>div {
+ background:#fff!important;color:#141414!important;border:1px solid #cacaca!important;
+ border-radius:12px!important;box-shadow:none!important;}
+[data-testid="stTextArea"] textarea::placeholder,[data-testid="stTextInput"] input::placeholder {color:#929292!important;opacity:1;}
+[data-testid="stSelectbox"] [data-baseweb="select"] * {color:#111!important;}
+[data-baseweb="popover"] {color:#141414!important;}
+[data-testid="stFileUploader"] {background:#fff;border-radius:12px;}
+[data-testid="stFileUploader"] section {background:#fcfcfc!important;border:1px dashed #a0a0a0!important;border-radius:12px!important;}
+[data-testid="stFileUploader"] section *,[data-testid="stFileUploader"] small {color:#484848!important;}
+[data-testid="stExpander"] {background:#fff;border:1px solid #dcdcdc!important;border-radius:15px!important;box-shadow:none!important;overflow:hidden;}
+[data-testid="stExpander"] summary,[data-testid="stExpander"] summary * {color:#171717!important;font-weight:650!important;}
+[data-testid="stMetric"] {background:#fff;border:1px solid #dcdcdc;border-radius:13px;padding:.8rem 1rem;}
+[data-testid="stMetricLabel"] p {color:#777!important;}
+[data-testid="stMetricValue"] {color:#0c0c0c!important;}
+[data-testid="stAlert"] {background:#f6f6f6!important;color:#151515!important;border:1px solid #d8d8d8!important;border-radius:12px;}
+[data-testid="stAlert"] p,[data-testid="stAlert"] * {color:#191919!important;}
+[data-testid="stDataFrame"] {border:1px solid #d8d8d8;border-radius:12px;overflow:hidden;}
+button[kind="primary"],[data-testid="stFormSubmitButton"] button[kind="primary"] {
+ background:#090909!important;color:#fff!important;border:1px solid #090909!important;
+ border-radius:11px!important;min-height:2.9rem;font-weight:700!important;box-shadow:none!important;}
+button[kind="primary"]:hover {background:#383838!important;border-color:#383838!important;}
+button[kind="secondary"],[data-testid="stDownloadButton"] button {
+ border-radius:11px!important;border:1px solid #aaa!important;color:#111!important;background:#fff!important;font-weight:650!important;}
+button[kind="secondary"]:hover,[data-testid="stDownloadButton"] button:hover {border-color:#111!important;background:#f4f4f4!important;}
+button:focus-visible,input:focus-visible,textarea:focus-visible {outline:2px solid #111!important;outline-offset:2px;}
+[data-testid="stCheckbox"] label span,[data-testid="stCheckbox"] label p {color:#181818!important;}
+[data-testid="stProgress"] div[role="progressbar"]>div {background:#0a0a0a!important;}
+hr {border-color:#dedede!important;}
+/* Monochrome brand and layout */
+.bw-hero {position:relative;overflow:hidden;background:#070707;color:#fff!important;padding:34px 38px 35px;
+ border-radius:21px;margin-bottom:17px;isolation:isolate;}
+.bw-hero:before {content:"";position:absolute;width:400px;height:400px;border:1px solid #343434;border-radius:50%;
+ right:-150px;top:-150px;pointer-events:none;}
+.bw-hero:after {content:"";position:absolute;width:300px;height:300px;border:1px solid #252525;border-radius:50%;
+ right:-105px;top:-103px;pointer-events:none;}
+.bw-brand {display:flex;gap:13px;align-items:center;margin-bottom:29px;position:relative;z-index:1;}
+.bw-mark {height:46px;width:46px;display:flex;align-items:center;justify-content:center;border:1px solid #717171;
+ border-radius:11px;background:#161616;}
+.bw-wordmark {font-size:17px;color:#fff;font-weight:700;letter-spacing:.14em;line-height:1.1;}
+.bw-brand-sub {font-size:10px;color:#b7b7b7;font-weight:600;letter-spacing:.18em;margin-top:4px;}
+.bw-kicker {color:#bdbdbd;font-size:10px;letter-spacing:.19em;font-weight:700;margin-bottom:10px;}
+.bw-hero h1 {position:relative;z-index:1;color:#fff!important;font-size:clamp(1.85rem,4vw,3.05rem)!important;
+ max-width:750px;letter-spacing:-.055em;line-height:1.12;font-weight:700;margin:0 0 13px!important;}
+.bw-hero p {position:relative;z-index:1;color:#c7c7c7!important;max-width:680px;font-size:13px;line-height:1.6;margin:0;}
+.bw-pill {position:relative;z-index:1;display:inline-block;margin-top:19px;border:1px solid #666;
+ padding:7px 12px;border-radius:7px;color:#f3f3f3;font-size:10px;font-weight:600;letter-spacing:.05em;}
+.bw-kpi-row {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:3px 0 26px;}
+.bw-kpi {padding:18px;border-radius:14px;background:#fff;border:1px solid #e0e0e0;}
+.bw-kpi-top {font-size:10px;letter-spacing:.12em;color:#747474;font-weight:700;}
+.bw-kpi-number {font-size:29px;color:#101010;font-weight:700;line-height:1.2;margin-top:4px;}
+.bw-kpi-note {font-size:12px;color:#777;margin-top:3px;}
+.bw-section {margin:25px 0 14px;}
+.bw-eyebrow {font-size:10px;letter-spacing:.16em;color:#606060;font-weight:700;}
+.bw-section h2 {font-size:25px;line-height:1.25;letter-spacing:-.045em;color:#0d0d0d!important;margin:5px 0 6px;font-weight:700;}
+.bw-section p {font-size:13px;color:#777;margin:0;line-height:1.6;}
+.bw-divider {border-top:1px solid #e1e1e1;margin:27px 0 15px;}
+.bw-micro {font-size:12px;color:#666;line-height:1.6;}
+.bw-login {margin:5rem auto 1.5rem;max-width:650px;}
+.bw-footer {font-size:11px;color:#777;line-height:1.6;padding-top:20px;text-align:center;}
+/* The ONLY color accents are the three evidence-based risk levels. */
+.bw-risk-legend {display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0 16px;}
+.bw-risk-badge {display:inline-flex;align-items:center;justify-content:center;padding:5px 10px;border-radius:7px;
+ font-size:10px;font-weight:700;letter-spacing:.055em;white-space:nowrap;border:1px solid currentColor;}
+.bw-risk-low {color:var(--bw-low)!important;background:var(--bw-low-bg)!important;}
+.bw-risk-medium {color:var(--bw-medium)!important;background:var(--bw-medium-bg)!important;}
+.bw-risk-high {color:var(--bw-high)!important;background:var(--bw-high-bg)!important;}
+.bw-odds {font-size:22px;font-weight:700;letter-spacing:-.04em;}
+.bw-odds.bw-risk-low,.bw-odds.bw-risk-medium,.bw-odds.bw-risk-high {background:none!important;}
+.bw-legend-note {font-size:11px;color:#777;line-height:1.5;}
+.bw-value-result {display:flex;align-items:center;gap:11px;flex-wrap:wrap;background:#fafafa;
+ border:1px solid #dedede;border-radius:12px;padding:12px 14px;margin:9px 0 4px;}
+.bw-value-number {color:#111;font-size:13px;font-weight:600;}
+.bw-market-list {display:grid;gap:10px;margin:8px 0 13px;}
+.bw-market-card {display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1.2fr) auto;align-items:center;
+ gap:16px;background:#fff;border:1px solid #dedede;border-radius:14px;padding:15px 18px;}
+.bw-card-overline {color:#777;font-size:10px;font-weight:700;letter-spacing:.09em;}
+.bw-card-title {color:#111;font-size:15px;font-weight:700;line-height:1.3;margin:4px 0;overflow-wrap:anywhere;}
+.bw-card-sub {color:#686868;font-size:12px;line-height:1.4;overflow-wrap:anywhere;}
+.bw-card-right {text-align:right;min-width:115px;}
+.bw-card-right .bw-risk-badge {margin-top:5px;}
+@media(max-width:760px){
+ .block-container {padding:.45rem .8rem 2.5rem;}
+ .bw-hero {padding:25px 23px 27px;border-radius:17px;}
+ .bw-brand {margin-bottom:23px;}
+ .bw-hero h1 {font-size:1.96rem!important;}
+ .bw-hero p {font-size:12px;}
+ .bw-kpi-row {gap:7px;}
+ .bw-kpi {padding:12px 10px;border-radius:11px;}
+ .bw-kpi-top {font-size:9px;letter-spacing:.025em;}
+ .bw-kpi-number {font-size:22px;}
+ .bw-kpi-note {font-size:10px;}
+ .bw-section h2 {font-size:22px;}
+ .bw-login {margin-top:1.2rem;}
+ .bw-market-card {grid-template-columns:minmax(0,1fr) auto;gap:9px;padding:13px;}
+ .bw-market-card .bw-market-middle {grid-column:1/-1;grid-row:2;}
+ .bw-card-right {grid-column:2;grid-row:1;min-width:84px;}
+ .bw-odds {font-size:20px;}
+ [data-testid="stMetric"] {padding:.65rem;}
+}
+</style>
+"""
+st.markdown(STYLE, unsafe_allow_html=True)
+
+WOLF_SVG = """<svg width="27" height="27" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+<path d="M13 11L36 23L50 19L64 23L87 11L83 57L68 80L50 91L32 80L17 57L13 11Z" stroke="#FFFFFF" stroke-width="6" stroke-linejoin="round"/>
+<path d="M26 48L43 56L34 59M74 48L57 56L66 59" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M41 73L50 79L59 73" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round"/></svg>"""
+
+
+def risk_markup(tier: str) -> str:
+    """Present only an estimated, relative risk grade (never a 'safe bet')."""
+    labels = {"low": "LOWER RISK", "medium": "MEDIUM RISK", "high": "HIGHER RISK"}
+    if tier not in labels:
+        return '<span class="bw-legend-note">NOT RATED</span>'
+    return f'<span class="bw-risk-badge bw-risk-{tier}">{labels[tier]}</span>'
+
+
+def odds_markup(odds: float, tier: str) -> str:
+    klass = f" bw-risk-{tier}" if tier in ("low", "medium", "high") else ""
+    return f'<span class="bw-odds{klass}">{float(odds):.2f}</span>'
+
+
+def candidate_cards(rows: list[dict]) -> str:
+    cards = []
+    for rank, row in enumerate(rows, 1):
+        tier = risk_tier(row)
+        cards.append(f"""<div class="bw-market-card">
+          <div><div class="bw-card-overline">CANDIDATE {rank:02d}</div>
+            <div class="bw-card-title">{escape(str(row.get('game','')))}</div>
+            <div class="bw-card-sub">Research score {int(row.get('score',0))}/25</div></div>
+          <div class="bw-market-middle"><div class="bw-card-overline">MARKET</div>
+            <div class="bw-card-title">{escape(str(row.get('market','')))}</div>
+            <div class="bw-card-sub">Est. EV: {float(row.get('ev',0))*100:+.1f}%</div></div>
+          <div class="bw-card-right">{odds_markup(row['odds'],tier)}<div>{risk_markup(tier)}</div></div>
+        </div>""")
+    return '<div class="bw-market-list">'+''.join(cards)+'</div>'
+
+
+def risk_legend() -> str:
+    return ('<div class="bw-risk-legend">'
+            +risk_markup('low')+risk_markup('medium')+risk_markup('high')
+            +'<span class="bw-legend-note">Relative research heuristic, not a guarantee of winning.</span></div>')
 
 
 def secret(name: str, default: str = "") -> str:
-    """Read secure server config; never expose value in the UI or exports."""
+    """Read secure server configuration without exposing secrets in the app."""
     if os.environ.get(name):
         return os.environ[name]
     try:
@@ -51,24 +206,53 @@ def secret(name: str, default: str = "") -> str:
         return default
 
 
+def hero(*, login: bool = False) -> None:
+    heading = "Football intelligence.<br>Without the noise." if not login else "Welcome to <br>BLACK WOLF."
+    subtitle = (
+        "Verify fixtures, research the latest team news, compare real odds, and surface value candidates — in one clear dashboard."
+        if not login else "Private access to your AI football research workspace."
+    )
+    st.markdown(f"""
+    <div class="bw-hero">
+      <div class="bw-brand">
+        <div class="bw-mark">{WOLF_SVG}</div>
+        <div><div class="bw-wordmark">BLACK WOLF</div><div class="bw-brand-sub">FOOTBALL INTELLIGENCE</div></div>
+      </div>
+      <div class="bw-kicker">FOOTBALL RESEARCH · BLACK & WHITE EDITION</div>
+      <h1>{heading}</h1>
+      <p>{subtitle}</p>
+      <span class="bw-pill">18 MATCHES &nbsp;→&nbsp; 8 CANDIDATES &nbsp;→&nbsp; UP TO 3 PRIORITIES</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def section(number: str, title: str, description: str) -> None:
+    st.markdown(f"""<div class="bw-section"><div class="bw-eyebrow">{escape(number)} / BLACK WOLF</div>
+    <h2>{escape(title)}</h2><p>{escape(description)}</p></div>""", unsafe_allow_html=True)
+
+
 def login_gate() -> bool:
     password = secret("APP_PASSWORD")
-    if not password or password == "a-unique-long-password":
-        st.error("مدیر سایت هنوز APP_PASSWORD را در تنظیمات امن سرور ثبت نکرده است.")
+    if not password or password in ("a-unique-long-password", "YOUR_PASSWORD", "YOUR_PRIVATE_PASSWORD"):
+        hero(login=True)
+        st.error("The administrator must configure APP_PASSWORD in Streamlit Secrets before the app can be used.")
         return False
     if st.session_state.get("logged_in", False):
         return True
-    st.title("⚽ ورود به تحلیل‌گر فوتبال")
-    st.caption("دسترسی به تحلیل آنلاین خصوصی است تا هزینه API توسط افراد ناشناس مصرف نشود.")
-    with st.form("login_form"):
-        entered = st.text_input("رمز ورود سایت", type="password")
-        submitted = st.form_submit_button("ورود", use_container_width=True, type="primary")
-    if submitted:
-        if compare_digest(entered.encode("utf-8"), password.encode("utf-8")):
-            st.session_state.logged_in = True
-            st.rerun()
-        else:
-            st.error("رمز ورود نادرست است.")
+    hero(login=True)
+    col, _ = st.columns([1.25, 1])
+    with col:
+        section("SECURE ACCESS", "Sign in", "Enter the private password configured for this dashboard.")
+        with st.form("login_form"):
+            entered = st.text_input("Dashboard password", type="password", placeholder="Enter your password")
+            submitted = st.form_submit_button("Sign in to BLACK WOLF", use_container_width=True, type="primary")
+        if submitted:
+            if compare_digest(entered.encode("utf-8"), password.encode("utf-8")):
+                st.session_state.logged_in = True
+                st.rerun()
+            else:
+                st.error("Incorrect password. Please try again.")
+    st.markdown('<div class="bw-footer">PRIVATE DASHBOARD &nbsp;•&nbsp; SERVER-SIDE API KEY &nbsp;•&nbsp; NO AUTOMATIC BETS</div>', unsafe_allow_html=True)
     return False
 
 
@@ -80,45 +264,51 @@ model = secret("OPENAI_MODEL", "gpt-5-mini").strip()
 now = datetime.now(ZoneInfo("Europe/Berlin"))
 
 with st.sidebar:
-    st.markdown("### تنظیمات استراتژی")
+    st.markdown("### Research controls")
+    st.caption("Tune the shortlist. These are decision rules, not a guarantee of profitability.")
     price_low, price_high = st.slider(
-        "بازه ضریب موردنظر", min_value=1.2, max_value=4.0,
+        "Target decimal-odds range", min_value=1.2, max_value=4.0,
         value=(1.65, 1.95), step=0.05,
     )
-    min_score = st.slider("حداقل امتیاز تحلیل (از ۲۵)", 0, 25, value=20)
-    min_ev_pct = st.slider("حداقل EV تخمینی", 0, 25, value=3, step=1, format="%d%%")
-    st.caption("این آستانه‌ها قراردادی هستند و اثبات‌کننده سودآوری نیستند.")
-    if st.button("خروج از حساب", use_container_width=True):
+    min_score = st.slider("Minimum research score / 25", 0, 25, value=20)
+    min_ev_pct = st.slider("Minimum estimated EV (%)", 0, 25, value=3, step=1)
+    st.divider()
+    st.caption(f"Model from server settings: {model or 'Not configured'}")
+    st.caption("Pricing and availability depend on your own API account.")
+    if st.button("Sign out", use_container_width=True):
         for item in list(st.session_state.keys()):
             del st.session_state[item]
         st.rerun()
 
-st.title("⚽ Football Strategy AI")
-st.caption("تحلیل آنلاین مسابقات با منابع به‌روز · استراتژی ۱۸ ← ۸ ← ۳ · مناسب موبایل")
-st.info("AI ممکن است اشتباه کند. برنامه برای ضریب ۱.۸۰ بازار را تحریف نمی‌کند؛ ابتدا شواهد بررسی می‌شود و سپس شما ضریب واقعی را وارد می‌کنید.")
+hero()
+st.markdown("""
+<div class="bw-kpi-row">
+  <div class="bw-kpi"><div class="bw-kpi-top">MATCH SLATE</div><div class="bw-kpi-number">Up to 18</div><div class="bw-kpi-note">Per research run</div></div>
+  <div class="bw-kpi"><div class="bw-kpi-top">SHORTLIST</div><div class="bw-kpi-number">Top 8</div><div class="bw-kpi-note">Only qualified picks</div></div>
+  <div class="bw-kpi"><div class="bw-kpi-top">RESEARCH MODE</div><div class="bw-kpi-number">AI + Web</div><div class="bw-kpi-note">Cited source links</div></div>
+</div>
+""", unsafe_allow_html=True)
 
-s1, s2, s3 = st.columns(3)
-with s1:
-    st.metric("بازی در هر نوبت", "۱۸ حداکثر")
-with s2:
-    st.metric("فهرست نهایی", "۸ حداکثر")
-with s3:
-    st.metric("مدل تحلیل", "AI + Web")
+section("01", "Add your fixtures", "Paste a list of matches or import a CSV. We verify every fixture before making a recommendation.")
+with st.expander("View accepted input formats"):
+    st.code("Arsenal - Bayern | 2026-11-05 21:00\nInter vs Porto | 2026-11-05 23:00", language="text")
+    st.caption("Example format only. The matches and dates above are not verified fixtures.")
+    st.write("You can also paste **three lines per match**: home team, kickoff time (HH:MM), away team. Choose the date below first.")
 
-st.subheader("۱. لیست بازی‌ها")
-with st.expander("فرمت‌های قابل قبول", expanded=False):
-    st.code("آرسنال - بایرن | 2026-11-05 21:00\nاینتر - پورتو | 2026-11-05 23:00", language="text")
-    st.write("یا از سایت مسابقات کپی کن و برای هر بازی نام میزبان، ساعت و نام مهمان را در سه خط جدا قرار بده. عنوان «لیگ قهرمانان» نادیده گرفته می‌شود.")
-    st.caption("نام‌ها و زمان‌های داخل نمونه صرفاً آموزشی‌اند و وجود آن مسابقات تأیید نشده است.")
-
-match_day = st.date_input("تاریخ پیش‌فرض برای بازی‌هایی که تاریخ ندارند", value=now.date(),
-                          help="برای هر شب، تاریخ موردنظر را جداگانه مشخص کن.")
-timezone = st.selectbox("منطقه زمانی ساعت‌های ورودی", ["Europe/Berlin", "Asia/Tehran", "UTC"], index=0,
-                        format_func=lambda x: {"Europe/Berlin": "اروپا/برلین", "Asia/Tehran": "ایران/تهران", "UTC": "UTC"}[x])
-input_text = st.text_area("بازی‌ها را اینجا بچسبان", height=170,
-                          placeholder="کومو - منچستر یونایتد\nلیل - گالاتاسرای\n...",
-                          help="در فرم یک‌خطی، برای جدا کردن نام تیم‌ها از « - » استفاده کن.")
-csv_file = st.file_uploader("یا CSV با ستون‌های home, away, kickoff", type=["csv"])
+field_a, field_b = st.columns([1, 1], gap="medium")
+with field_a:
+    match_day = st.date_input("Default match date", value=now.date(), help="Applied when a fixture line has no date.")
+with field_b:
+    timezone = st.selectbox(
+        "Kickoff timezone", ["Europe/Berlin", "Asia/Tehran", "UTC"],
+        index=0, format_func=lambda x: {"Europe/Berlin": "Berlin (CET/CEST)", "Asia/Tehran": "Tehran", "UTC": "UTC"}[x],
+    )
+input_text = st.text_area(
+    "Match list", height=145,
+    placeholder="Arsenal - Bayern\nInter - Porto\nBarcelona - Liverpool",
+    help="Use 'Home - Away' per line, optionally followed by '| YYYY-MM-DD HH:MM'.",
+)
+csv_file = st.file_uploader("Or upload a CSV (home, away, optional kickoff)", type=["csv"])
 
 
 def current_matches() -> list[dict]:
@@ -126,7 +316,7 @@ def current_matches() -> list[dict]:
         data = csv_file.getvalue().decode("utf-8-sig")
         df = pd.read_csv(io.StringIO(data)).fillna("")
         if not {"home", "away"}.issubset(df.columns):
-            raise ValueError("CSV باید دو ستون home و away داشته باشد؛ kickoff اختیاری است.")
+            raise ValueError("CSV needs 'home' and 'away' columns; 'kickoff' is optional.")
         text = "\n".join(
             f"{str(row['home']).strip()} - {str(row['away']).strip()} | "
             f"{str(row.get('kickoff') or match_day.isoformat()).strip()}"
@@ -135,35 +325,34 @@ def current_matches() -> list[dict]:
         return parse_schedule(text, fallback_date=match_day.isoformat())
     return parse_schedule(input_text, fallback_date=match_day.isoformat())
 
-st.caption("در هر بازی یک درخواست پژوهش آنلاین اجرا می‌شود که ممکن است هزینه API داشته باشد.")
-acknowledge = st.checkbox("هزینه درخواست‌های هوش مصنوعی را می‌دانم و تأیید می‌کنم.")
-usage_count = st.session_state.get("used_calls", 0)
-st.caption(f"درخواست‌های انجام‌شده در این نشست: {usage_count} از سقف ۳۶")
-can_analyze = bool(key) and acknowledge and usage_count < 36
-if not key:
-    st.error("مدیر سایت هنوز OPENAI_API_KEY را در بخش Secrets تنظیم نکرده است.")
 
-if st.button("🔎 شروع تحلیل هوش مصنوعی", type="primary", use_container_width=True, disabled=not can_analyze):
+st.caption("Research makes one AI web-search request per fixture. API usage may incur charges.")
+acknowledge = st.checkbox("I understand that AI research requests may incur API charges.")
+usage_count = st.session_state.get("used_calls", 0)
+if not key:
+    st.warning("OPENAI_API_KEY is missing from Streamlit Secrets. Ask the administrator to configure it.")
+run_disabled = not bool(key) or not acknowledge or usage_count >= 36
+if st.button("Analyze match list  →", type="primary", use_container_width=True, disabled=run_disabled):
     try:
         matches = current_matches()
         if not matches:
-            st.warning("حداقل یک مسابقه وارد کن.")
+            st.warning("Enter at least one match.")
         elif len(matches) > 18:
-            st.error("در هر بار حداکثر ۱۸ مسابقه مجاز است؛ فهرست را به چند نوبت تقسیم کن.")
+            st.error("Maximum 18 matches per run. Split longer lists into separate runs.")
         elif len(matches) + usage_count > 36:
-            st.error("سقف درخواست‌های این نشست تمام می‌شود؛ یک نوبت کوچک‌تر انتخاب کن.")
+            st.error("This session would exceed the 36-request safety cap. Select fewer matches.")
         else:
             from openai import OpenAI
 
             client = OpenAI(api_key=key, timeout=90.0, max_retries=1)
-            progress = st.progress(0, text="آماده‌سازی")
+            progress = st.progress(0, text="Starting research…")
             output = []
             for i, match in enumerate(matches):
-                progress.progress(i / len(matches), text=f"{i+1}/{len(matches)} — {match['home']} / {match['away']}")
+                progress.progress(i / len(matches), text=f"Researching {i+1}/{len(matches)}: {match['home']} vs {match['away']}")
                 st.session_state.used_calls = st.session_state.get("used_calls", 0) + 1
                 try:
                     output.append(analyze_fixture(
-                        client, model, match, now.isoformat(timespec="minutes"),
+                        client, model, match, datetime.now(ZoneInfo("Europe/Berlin")).isoformat(timespec="minutes"),
                         input_timezone=timezone,
                     ))
                 except Exception:
@@ -173,106 +362,164 @@ if st.button("🔎 شروع تحلیل هوش مصنوعی", type="primary", use
                         "competition": "", "market": "", "market_type": "none",
                         "score": 0, "probability_pct": None, "odds": None,
                         "rationale": "", "recent_evidence": "", "team_news": "",
-                        "fixture_evidence": "", "risks": "خطا در درخواست آنلاین؛ این مسابقه به فهرست نهایی وارد نشد.",
+                        "fixture_evidence": "", "risks": "AI request failed. Check model access, API credit, and Streamlit logs.",
                         "sources": [],
                     })
-            progress.progress(1.0, text="تحلیل کامل شد")
+            progress.progress(1.0, text="Research completed")
             st.session_state.analysis = output
             st.session_state.analysis_timezone = timezone
+            st.session_state.analysis_label = f"{len(output)} fixtures • {datetime.now(ZoneInfo('Europe/Berlin')).strftime('%d %b %Y, %H:%M')}"
             st.session_state.run_id = st.session_state.get("run_id", 0) + 1
-            st.success(f"{len(output)} بازی بررسی شد. جزئیات و لینک منابع را پایین ببین.")
-    except (ValueError, UnicodeDecodeError) as err:
-        st.error(f"اشکال در لیست ورودی: {err}")
+            st.success(f"Research completed for {len(output)} matches. Check the evidence below.")
+    except (ValueError, UnicodeDecodeError, pd.errors.ParserError) as err:
+        st.error(f"Unable to read match list: {err}")
 
 if "analysis" not in st.session_state:
-    st.caption("بعد از تحلیل، برای هر مسابقه یک توضیح فارسی و لینک منبع می‌بینی و می‌توانی ضریب واقعی بازار را وارد کنی.")
+    st.markdown("""<div class="bw-footer">BLACK WOLF · EVIDENCE OVER HYPE · NO AUTOMATED WAGER PLACEMENT<br>
+AI probabilities are uncalibrated estimates. Always verify team news and prices before any decision.</div>""", unsafe_allow_html=True)
     st.stop()
 
-st.divider()
-st.subheader("۲. گزارش AI و ورود ضرایب واقعی")
-st.caption("بازارهای پیشنهادی فقط دوحالته هستند؛ شرط‌های دارای برگشت پول یا نیم‌برد به مدل EV ساده وارد نمی‌شوند.")
+st.markdown('<div class="bw-divider"></div>', unsafe_allow_html=True)
+section("02", "AI research & market prices", "Review match verification and cited evidence, then enter actual bookmaker odds for the exact recommended market.")
+st.caption(f"Last completed research: {st.session_state.get('analysis_label', 'Current session')} · Timezone: {st.session_state.get('analysis_timezone', timezone)}")
+st.markdown(risk_legend(), unsafe_allow_html=True)
+
+verified_count = sum(bool(r.get("verified")) for r in st.session_state.analysis)
+review_col_a, review_col_b, review_col_c = st.columns(3, gap="small")
+with review_col_a:
+    st.metric("Matches analyzed", len(st.session_state.analysis))
+with review_col_b:
+    st.metric("Fixtures verified", verified_count)
+with review_col_c:
+    st.metric("Needs verification", len(st.session_state.analysis) - verified_count)
+
 scored = []
-for i, row in enumerate(st.session_state.analysis):
-    status = "تأیید اولیه" if row.get("verified") else "تأییدنشده"
-    score = row.get("score", 0)
-    with st.expander(f"{i+1}. {row['game']} | {status} | {score}/۲۵", expanded=i == 0):
-        st.write(f"**تاریخ/زمان ورودی:** {row.get('kickoff','—')} ({st.session_state.get('analysis_timezone', timezone)})")
-        st.write(f"**رقابت:** {row.get('competition') or 'تأیید نشده'}")
-        st.write(f"**وضعیت برنامه:** {row.get('fixture_evidence') or 'شواهد کافی در دسترس نیست'}")
-        st.write(f"**فرم اخیر:** {row.get('recent_evidence') or 'نامشخص'}")
-        st.write(f"**ترکیب و غایبان:** {row.get('team_news') or 'نامشخص'}")
-        st.write(f"**بازار پیشنهادی:** {row.get('market') or 'فعلاً هیچ‌کدام'}")
-        st.write(f"**منطق:** {row.get('rationale') or 'اطلاعات کافی پیدا نشد'}")
-        st.write(f"**ریسک:** {row.get('risks') or 'نامشخص'}")
-        sources = row.get("sources") or []
+for i, record in enumerate(st.session_state.analysis):
+    is_verified = bool(record.get("verified"))
+    score = int(record.get("score", 0))
+    label = "VERIFIED" if is_verified else "UNVERIFIED"
+    with st.expander(f"{i+1:02d}   {record['game']}     ·     {label}     ·     {score}/25", expanded=i == 0):
+        if not is_verified:
+            st.warning("Fixture not verified with cited sources. No market is eligible for the shortlist.")
+        top_a, top_b = st.columns([1.4, 1])
+        with top_a:
+            st.markdown("**Fixture & competition**")
+            st.write(record.get("competition") or "Not confirmed")
+            st.caption(f"Submitted kickoff: {record.get('kickoff') or 'Not provided'}")
+        with top_b:
+            st.markdown("**Research score**")
+            st.progress(max(0, min(25, score)) / 25)
+            st.caption(f"{score} / 25 · heuristic research-quality filter")
+        st.markdown("**Fixture verification**")
+        st.write(record.get("fixture_evidence") or "Insufficient scheduling evidence.")
+        research_a, research_b = st.columns(2, gap="large")
+        with research_a:
+            st.markdown("**Recent form**")
+            st.write(record.get("recent_evidence") or "No reliable recent evidence found.")
+            st.markdown("**Squad availability**")
+            st.write(record.get("team_news") or "No reliable team news confirmed.")
+        with research_b:
+            st.markdown("**Suggested market**")
+            st.write(record.get("market") or "No qualified market")
+            st.markdown("**Why this market**")
+            st.write(record.get("rationale") or "Insufficient information.")
+            st.markdown("**Main risks**")
+            st.write(record.get("risks") or "Unknown risks.")
+        sources = record.get("sources") or []
         if sources:
-            st.markdown("**منابع پژوهش:**")
+            st.markdown("**Research sources**")
             for j, source in enumerate(sources[:5], 1):
-                st.markdown(f"[{j}. مشاهده منبع]({source})")
+                st.markdown(f"{j}. [Open reference]({source})")
         else:
-            st.warning("منبع قابل ارائه پیدا نشد؛ این مسابقه قابل انتخاب نیست.")
-        if not row.get("verified") or not row.get("market"):
-            st.warning("برای این بازی پیشنهاد قابل اتکا ثبت نشد. ضریب وارد نکن.")
-            priced = None
-            probability = None
-        else:
-            left, right = st.columns(2)
-            with left:
-                priced = st.number_input("ضریب واقعی همین بازار", min_value=1.01, max_value=50.0,
-                                         step=0.01, value=None, format="%.2f",
-                                         key=f"price_{st.session_state.run_id}_{i}")
-            with right:
-                suggestion = row.get("probability_pct")
-                probability = st.number_input("احتمال تخمینی (%)", min_value=1.0,
-                                               max_value=99.0, step=0.5,
-                                               value=float(suggestion) if suggestion is not None else None,
-                                               key=f"prob_{st.session_state.run_id}_{i}")
-            if priced and probability:
+            st.caption("No attributable source links were returned.")
+
+        priced, probability = None, None
+        if is_verified and record.get("market"):
+            st.markdown("**Market valuation**")
+            odds_col, prob_col = st.columns(2, gap="medium")
+            with odds_col:
+                priced = st.number_input(
+                    "Actual decimal odds", min_value=1.01, max_value=50.0, step=0.01,
+                    value=None, format="%.2f", placeholder="e.g. 1.82",
+                    key=f"price_{st.session_state.run_id}_{i}",
+                    help="Use current odds from your bookmaker for this exact market.",
+                )
+            with prob_col:
+                suggestion = record.get("probability_pct")
+                probability = st.number_input(
+                    "Estimated win probability (%)", min_value=1.0, max_value=99.0,
+                    step=0.5, value=float(suggestion) if suggestion is not None else None,
+                    key=f"prob_{st.session_state.run_id}_{i}",
+                    help="AI estimate is rough and uncalibrated. Adjust only with evidence.",
+                )
+            if priced is not None and probability is not None:
                 ev = expected_value(priced, probability)
                 if ev is not None:
-                    st.caption(f"احتمال ضمنی: {100/priced:.1f}٪ | EV محاسبه‌شده: {ev*100:+.1f}٪ — وابسته به دقت احتمال تخمینی")
-    record = {**row, "odds": priced, "probability_pct": probability}
-    record["ev"] = expected_value(priced, probability)
-    scored.append(record)
+                    tier = risk_tier({**record, "odds": priced, "probability_pct": probability})
+                    st.markdown(
+                        f'<div class="bw-value-result">{odds_markup(priced, tier)}{risk_markup(tier)}'
+                        f'<span class="bw-value-number">Implied probability: {100/priced:.1f}% &nbsp;·&nbsp; '
+                        f'Estimated EV: {ev*100:+.1f}%</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.caption("Relative risk indicators use uncalibrated estimates; a green label never means guaranteed or safe.")
+    scored_record = {**record, "odds": priced, "probability_pct": probability}
+    scored_record["ev"] = expected_value(priced, probability)
+    scored.append(scored_record)
 
-st.divider()
-st.subheader("۳. رتبه‌بندی استراتژی")
-selected = shortlist(scored, min_odd=price_low, max_odd=price_high,
-                     min_score=min_score, min_ev=min_ev_pct / 100,
-                     max_count=8)
+st.markdown('<div class="bw-divider"></div>', unsafe_allow_html=True)
+section("03", "Shortlist & decisions", "Only verified binary markets with entered odds and enough estimated value can reach your shortlist.")
+selected = shortlist(
+    scored, min_odd=price_low, max_odd=price_high,
+    min_score=min_score, min_ev=min_ev_pct / 100, max_count=8,
+)
 if selected:
-    st.success(f"{len(selected)} گزینه از معیارها عبور کردند؛ این به معنی تضمین برد نیست.")
+    st.markdown(f"**{len(selected)} candidate(s)** passed your filters. Even lower-risk labels can lose.")
     rank_df = pd.DataFrame([{
-        "ردیف": i + 1,
-        "مسابقه": r["game"], "بازار": r["market"],
-        "ضریب": round(float(r["odds"]), 2),
-        "امتیاز": int(r["score"]),
-        "EV تخمینی (%)": round(float(r["ev"]) * 100, 1),
-    } for i, r in enumerate(selected)])
-    st.dataframe(rank_df, hide_index=True, use_container_width=True)
-    st.markdown("**حداکثر ۳ گزینه اول برای بررسی تکی:**")
-    for row in selected[:3]:
-        st.write(f"• {row['game']}: {row['market']} — ضریب {row['odds']:.2f}")
+        "Rank": i+1,
+        "Fixture": row["game"],
+        "Market": row["market"],
+        "Odds": round(float(row["odds"]), 2),
+        "Score": int(row["score"]),
+        "Est. EV (%)": round(float(row["ev"]) * 100, 1),
+    } for i, row in enumerate(selected)])
+    st.markdown(candidate_cards(selected), unsafe_allow_html=True)
+    with st.expander("View shortlist as a data table"):
+        st.dataframe(rank_df, hide_index=True, use_container_width=True)
+    st.markdown("#### Highest-ranked singles (up to 3)")
+    for index, row in enumerate(selected[:3], 1):
+        st.markdown(
+            f"**{index}. {escape(str(row['game']))}** — {escape(str(row['market']))} · "
+            f"{odds_markup(row['odds'], risk_tier(row))} &nbsp; {risk_markup(risk_tier(row))}",
+            unsafe_allow_html=True,
+        )
     combos = combos_in_range(selected, min_total=2, max_total=3, max_legs=3)
     if combos:
         combo = combos[0]
-        st.write(f"**میکس اختیاری:** {' + '.join(combo['games'])} | ضریب کل {combo['odds']:.2f}")
-        st.caption("احتمال میکس بررسی نشده و ممکن است بین بازارها همبستگی وجود داشته باشد؛ میکس الزامی نیست.")
+        st.markdown(f"**Optional combination (decimal {combo['odds']:.2f}):**")
+        st.write("  +  ".join(combo["games"]))
+        st.caption("Combinations multiply risk. Independence/correlation and combined probability are not verified.")
 else:
-    st.warning("هیچ بازی‌ای با ضریب واردشده و آستانه‌های فعلی معیارها را پاس نکرد. «بدون انتخاب» کاملاً مجاز است.")
+    st.info("No picks passed the current filters. 'No selection' is a valid and often appropriate result.")
 
-st.subheader("۴. دریافت خروجی")
+st.markdown('<div class="bw-divider"></div>', unsafe_allow_html=True)
+section("04", "Export your analysis", "Save research and decisions in a structured format for tracking and review.")
 report = {
-    "created_at": now.isoformat(), "timezone": st.session_state.get("analysis_timezone", timezone), "model": model,
-    "method": "binary markets only; user prices; AI probability is uncalibrated",
+    "created_at": datetime.now(ZoneInfo("Europe/Berlin")).isoformat(),
+    "timezone": st.session_state.get("analysis_timezone", timezone),
+    "model": model,
+    "method": "verified binary markets only; actual user-supplied odds; uncalibrated AI estimates",
     "games": [flatten_row(r) for r in scored],
     "selected": [flatten_row(r) for r in selected],
 }
-st.download_button("دانلود گزارش JSON", json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
-                   file_name="football_strategy_ai_report.json", mime="application/json",
-                   use_container_width=True)
-csv_rows = [{**flatten_row(r), "sources": " ; ".join(r.get("sources") or [])} for r in scored]
-st.download_button("دانلود گزارش CSV", pd.DataFrame(csv_rows).to_csv(index=False).encode("utf-8-sig"),
-                   file_name="football_strategy_ai_report.csv", mime="text/csv",
-                   use_container_width=True)
-st.caption("این برنامه داده‌های لحظه‌ای ضرایب را دریافت نمی‌کند و هیچ شرطی را به‌صورت خودکار ثبت نمی‌کند. مبلغ قابل‌از‌دست‌دادن را محدود نگه دار.")
+json_data = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
+csv_rows = [{**flatten_row(row), "sources": " ; ".join(row.get("sources") or [])} for row in scored]
+export_left, export_right = st.columns(2)
+with export_left:
+    st.download_button("↓ Download JSON report", data=json_data,
+                       file_name="black_wolf_analysis.json", mime="application/json", use_container_width=True)
+with export_right:
+    st.download_button("↓ Download CSV report", data=pd.DataFrame(csv_rows).to_csv(index=False).encode("utf-8-sig"),
+                       file_name="black_wolf_analysis.csv", mime="text/csv", use_container_width=True)
+st.markdown("""<div class="bw-footer">BLACK WOLF · RESEARCH FIRST. RISK ALWAYS. <br>
+No live odds feed. No automatic bet placement. AI estimates are not statistically calibrated and cannot guarantee outcomes.</div>""", unsafe_allow_html=True)

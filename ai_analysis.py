@@ -51,7 +51,7 @@ Suggest ONE precisely described BINARY pre-match market (90 minutes only), e.g. 
 Odds, prices and bookmakers are never provided by you: no made-up odds or claims of real-time availability.
 Optional probability_pct is a ROUGH, UNCALIBRATED estimate, not a guarantee; set null when evidence is insufficient. Never set it based on desired odds.
 Use five 0-5 rubric scores: form, home_away, availability, tactics, data_quality. Score conservatively; missing evidence lowers data_quality.
-Answer only as strict JSON with all required properties; prose fields and market in Persian. Do not fabricate scores, injuries, statistics, or citations.
+Answer only as strict JSON with all required properties; prose fields and market in English. Do not fabricate scores, injuries, statistics, or citations.
 """
 
 
@@ -104,7 +104,7 @@ def analyze_fixture(client, model: str, match: dict, as_of: str, input_timezone:
                          "strict": True, "schema": SCHEMA}},
     )
     if not response.output_text:
-        raise RuntimeError("مدل خروجی تحلیلی ارائه نکرد؛ نتیجه‌ای ثبت نشد.")
+        raise RuntimeError("The model returned no analysis output; no result was recorded.")
     data = json.loads(response.output_text)
     urls = extract_cited_urls(response)
     confirmed = data.get("fixture_status") == "confirmed" and bool(urls)

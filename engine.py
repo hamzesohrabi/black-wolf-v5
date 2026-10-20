@@ -23,26 +23,26 @@ def parse_matches(text: str, fallback_date: str = "") -> list[dict]:
         parts = [p.strip() for p in line.split("|")]
         teams = sep.split(parts[0], maxsplit=1)
         if len(teams) != 2 or not all(teams):
-            raise ValueError(f"خط {line_number}: فرمت نام تیم‌ها درست نیست. مثال: بارسلونا - اینتر")
+            raise ValueError(f"Line {line_number}: invalid team format. Example: Barcelona - Inter")
         home, away = teams
         if home.casefold() == away.casefold():
-            raise ValueError(f"خط {line_number}: نام دو تیم یکسان است.")
+            raise ValueError(f"Line {line_number}: home and away teams must be different.")
         fixture_date = parts[1] if len(parts) >= 2 and parts[1] else fallback_date
         if not fixture_date:
-            raise ValueError(f"خط {line_number}: تاریخ مسابقه مشخص نشده است.")
+            raise ValueError(f"Line {line_number}: match date is missing.")
         try:
             # First ten chars must be an ISO date.
             date.fromisoformat(fixture_date[:10])
             if len(fixture_date) > 10:
                 datetime.strptime(fixture_date, "%Y-%m-%d %H:%M")
         except ValueError as exc:
-            raise ValueError(f"خط {line_number}: تاریخ باید YYYY-MM-DD یا YYYY-MM-DD HH:MM باشد.") from exc
+            raise ValueError(f"Line {line_number}: use YYYY-MM-DD or YYYY-MM-DD HH:MM.") from exc
         key = (home.casefold(), away.casefold(), fixture_date)
         if key not in seen:
             seen.add(key)
             matches.append({"home": home, "away": away, "kickoff": fixture_date})
     if len(matches) > 40:
-        raise ValueError("برای هر اجرا حداکثر ۴۰ بازی وارد کنید تا هزینه API کنترل شود.")
+        raise ValueError("Maximum 40 matches per input to control API expenses.")
     return matches
 
 
@@ -131,15 +131,15 @@ def parse_vertical_schedule(text: str, fallback_date: str) -> list[dict]:
     lines = [x.strip() for x in text.splitlines() if x.strip() and not x.strip().startswith("#")]
     lines = [line for line in lines if line.casefold() not in headings]
     if not lines or len(lines) % 3 != 0:
-        raise ValueError("برای ورودی ستونی، هر بازی باید سه خط داشته باشد: میزبان، ساعت، مهمان.")
+        raise ValueError("For three-line input, each match needs: home team, kickoff time, away team.")
     clock_pattern = re.compile(r"^(?:[01]?\d|2[0-3]):[0-5]\d$")
     out = []
     for i in range(0, len(lines), 3):
         home, clock, away = lines[i:i+3]
         if not clock_pattern.fullmatch(clock):
-            raise ValueError(f"ساعت ردیف {i // 3 + 1} معتبر نیست: {clock}")
+            raise ValueError(f"Invalid kickoff time for match {i // 3 + 1}: {clock}")
         if not home or not away or home.casefold() == away.casefold():
-            raise ValueError("نام تیم‌های یکی از بازی‌ها نامعتبر است.")
+            raise ValueError("Invalid team name(s) in one of the fixtures.")
         out.append(f"{home} - {away} | {fallback_date} {clock}")
     return parse_matches("\n".join(out), fallback_date=fallback_date)
 
@@ -157,3 +157,28 @@ def parse_schedule(text: str, fallback_date: str = "") -> list[dict]:
             return parse_vertical_schedule(text, fallback_date)
         except ValueError:
             raise normal_error
+
+
+def risk_tier(row: dict) -> str | None:
+    """Relative UI risk label: low/medium/high; none if not priceable.
+
+    Research quality + *uncalibrated* win probabilities are NOT a reliable
+    forecast, and 'low' must never be described as a safe or certain bet.
+    Requires quoted odds and a probability to avoid invented classification.
+    """
+    try:
+        odds = float(row.get("odds"))
+        probability = float(row.get("probability_pct"))
+        score = int(row.get("score", 0))
+    except (TypeError, ValueError):
+        return None
+    ev = expected_value(odds, probability)
+    if ev is None:
+        return None
+    if not row.get("verified", False) or row.get("market_type") != "binary":
+        return "high"
+    if probability >= 65 and score >= 22 and ev >= 0.05:
+        return "low"
+    if probability >= 57 and score >= 19 and ev >= 0:
+        return "medium"
+    return "high"
