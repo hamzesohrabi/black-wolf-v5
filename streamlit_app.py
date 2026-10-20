@@ -6,6 +6,7 @@ No live bookmaker odds, betting execution, or guaranteed results.
 from __future__ import annotations
 
 from datetime import datetime
+from hashlib import sha256
 from hmac import compare_digest
 import io
 import json
@@ -17,7 +18,8 @@ import pandas as pd
 import streamlit as st
 
 from ai_analysis import analyze_fixture
-from engine import combos_in_range, expected_value, flatten_row, parse_schedule, shortlist, risk_tier
+from engine import combos_in_range, expected_value, flatten_row, shortlist, risk_tier
+from smart_paste import smart_parse, validated_preview
 
 st.set_page_config(
     page_title="BLACK WOLF | Football Intelligence",
@@ -289,50 +291,111 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-section("01", "Add your fixtures", "Paste a list of matches or import a CSV. We verify every fixture before making a recommendation.")
-with st.expander("View accepted input formats"):
-    st.code("Arsenal - Bayern | 2026-11-05 21:00\nInter vs Porto | 2026-11-05 23:00", language="text")
-    st.caption("Example format only. The matches and dates above are not verified fixtures.")
-    st.write("You can also paste **three lines per match**: home team, kickoff time (HH:MM), away team. Choose the date below first.")
+section("01", "Smart Paste your fixtures", "Paste raw website text, a match list, or team names. BLACK WOLF separates fixtures, removes duplicates and lets you review everything before AI research.")
+with st.expander("What can Smart Paste read?", expanded=False):
+    st.code("Arsenal - Bayern\nInter vs Porto\nBarcelona\nLiverpool", language="text")
+    st.caption("Also accepts BBC-style repeated team names, fixture status labels, and 'Kick-off at 5:45pm' summaries. When only team names are supplied, consecutive pairs are provisional and must be reviewed.")
+    st.warning("Pasted fixtures are not verified by Smart Paste. AI research later checks each match against available sources.")
 
 field_a, field_b = st.columns([1, 1], gap="medium")
 with field_a:
-    match_day = st.date_input("Default match date", value=now.date(), help="Applied when a fixture line has no date.")
+    match_day = st.date_input("Default match date", value=now.date(), help="Used when the copied text does not contain a valid ISO date.")
 with field_b:
     timezone = st.selectbox(
         "Kickoff timezone", ["Europe/Berlin", "Asia/Tehran", "UTC"],
         index=0, format_func=lambda x: {"Europe/Berlin": "Berlin (CET/CEST)", "Asia/Tehran": "Tehran", "UTC": "UTC"}[x],
     )
 input_text = st.text_area(
-    "Match list", height=145,
-    placeholder="Arsenal - Bayern\nInter - Porto\nBarcelona - Liverpool",
-    help="Use 'Home - Away' per line, optionally followed by '| YYYY-MM-DD HH:MM'.",
+    "Smart Paste — copied fixtures or team names", height=210, key="smart_input_text",
+    placeholder="Paste copied football schedules here...\n\nFenerbahce\nFenerbahce\napp.football.scores_fixtures.are_scheduled\nSlavia Prague\nSlavia Prague\n5.45pm\nFenerbahce vs Slavia Prague Kick-off at 5:45pm",
+    help="Paste original text. No need to clean website labels or repeat names yourself.",
 )
-csv_file = st.file_uploader("Or upload a CSV (home, away, optional kickoff)", type=["csv"])
+keep_times = st.checkbox(
+    "Import clock times from pasted text (only if they match the timezone above)", value=False,
+    help="Default OFF. BBC and other websites may show times in a different timezone. Times are NEVER converted automatically.",
+)
+csv_file = st.file_uploader("Or upload CSV (home, away, optional kickoff)", type=["csv"])
 
+sig_material = (str(match_day) + "|" + timezone + "|" + str(keep_times) + "|" + input_text).encode("utf-8")
+if csv_file is not None:
+    sig_material += b"|csv|" + csv_file.getvalue()
+input_signature = sha256(sig_material).hexdigest()
+
+if st.button("1  ·  Prepare & clean fixtures", type="primary", use_container_width=True):
+    try:
+        if csv_file is not None:
+            df = pd.read_csv(io.BytesIO(csv_file.getvalue()), dtype=str).fillna("")
+            df.columns = [c.strip().lower() for c in df.columns]
+            if not {"home", "away"}.issubset(df.columns):
+                raise ValueError("CSV must include home and away columns. The kickoff column is optional.")
+            proposed = [{
+                "home": str(row["home"]).strip(), "away": str(row["away"]).strip(),
+                "kickoff": str(row.get("kickoff") or match_day.isoformat()).strip(),
+                "source": "CSV upload", "confidence": "REVIEW",
+            } for _, row in df.iterrows()]
+            validated_preview(proposed, max_fixtures=18)
+            notes = ["CSV uploaded. Check every fixture before analysis."]
+            mode = "CSV upload"
+        else:
+            parsed = smart_parse(input_text, match_day.isoformat(), keep_times=keep_times)
+            proposed = parsed.fixtures
+            notes = parsed.warnings
+            mode = parsed.mode
+            if len(proposed) > 18:
+                raise ValueError(f"Found {len(proposed)} fixtures. Limit to 18 per research run (delete the rest and prepare again).")
+        if not proposed:
+            st.warning("No fixtures found. Try 'Team A - Team B' on each line, or paste a website fixture list.")
+            st.session_state.pop("bw_preview", None)
+        else:
+            st.session_state.bw_preview = proposed
+            st.session_state.bw_preview_notes = notes
+            st.session_state.bw_preview_mode = mode
+            st.session_state.bw_preview_signature = input_signature
+            st.session_state.bw_preview_version = st.session_state.get("bw_preview_version", 0) + 1
+            st.success(f"Prepared {len(proposed)} distinct fixture(s). Review and confirm them below.")
+    except (ValueError, UnicodeDecodeError, pd.errors.ParserError) as err:
+        st.error(f"Smart Paste could not prepare this input: {err}")
+
+is_current_preview = bool(st.session_state.get("bw_preview")) and st.session_state.get("bw_preview_signature") == input_signature
+review_confirmed = False
+edited_preview = None
+if is_current_preview:
+    st.markdown("#### 2 · Review the extracted fixtures")
+    st.caption(f"Detected format: {st.session_state.get('bw_preview_mode', 'unknown')}. Tap any cell to edit team names or dates; remove incorrect rows. AI has NOT been called yet.")
+    for note in st.session_state.get("bw_preview_notes", []):
+        st.info(note)
+    table = pd.DataFrame(st.session_state.bw_preview, columns=["home", "away", "kickoff", "source", "confidence"])
+    edited_preview = st.data_editor(
+        table, hide_index=True, use_container_width=True, num_rows="dynamic",
+        disabled=["source", "confidence"], key=f"bw_review_{st.session_state.bw_preview_version}",
+        column_config={
+            "home": st.column_config.TextColumn("Home team", required=True, width="medium"),
+            "away": st.column_config.TextColumn("Away team", required=True, width="medium"),
+            "kickoff": st.column_config.TextColumn("Date / kickoff", required=True, help="YYYY-MM-DD or YYYY-MM-DD HH:MM"),
+            "source": st.column_config.TextColumn("Parsed from"),
+            "confidence": st.column_config.TextColumn("Pair quality"),
+        },
+    )
+    review_confirmed = st.checkbox(
+        "I checked the team pairings, home/away order and dates. Continue to AI verification.",
+        key=f"bw_confirm_{st.session_state.bw_preview_version}",
+    )
+    st.caption("High confidence means the text clearly named both teams; it does NOT confirm that the real-world match exists.")
+elif st.session_state.get("bw_preview"):
+    st.warning("The input or date/time settings changed. Click 'Prepare & clean fixtures' again to refresh your preview.")
 
 def current_matches() -> list[dict]:
-    if csv_file is not None:
-        data = csv_file.getvalue().decode("utf-8-sig")
-        df = pd.read_csv(io.StringIO(data)).fillna("")
-        if not {"home", "away"}.issubset(df.columns):
-            raise ValueError("CSV needs 'home' and 'away' columns; 'kickoff' is optional.")
-        text = "\n".join(
-            f"{str(row['home']).strip()} - {str(row['away']).strip()} | "
-            f"{str(row.get('kickoff') or match_day.isoformat()).strip()}"
-            for _, row in df.iterrows()
-        )
-        return parse_schedule(text, fallback_date=match_day.isoformat())
-    return parse_schedule(input_text, fallback_date=match_day.isoformat())
-
+    if edited_preview is None:
+        raise ValueError("Prepare the fixture list and confirm the preview first.")
+    return validated_preview(edited_preview.to_dict(orient="records"), max_fixtures=18)
 
 st.caption("Research makes one AI web-search request per fixture. API usage may incur charges.")
 acknowledge = st.checkbox("I understand that AI research requests may incur API charges.")
 usage_count = st.session_state.get("used_calls", 0)
 if not key:
     st.warning("OPENAI_API_KEY is missing from Streamlit Secrets. Ask the administrator to configure it.")
-run_disabled = not bool(key) or not acknowledge or usage_count >= 36
-if st.button("Analyze match list  →", type="primary", use_container_width=True, disabled=run_disabled):
+run_disabled = not bool(key) or not acknowledge or usage_count >= 36 or not is_current_preview or not review_confirmed
+if st.button("3  ·  Verify & analyze with AI  →", type="primary", use_container_width=True, disabled=run_disabled):
     try:
         matches = current_matches()
         if not matches:
@@ -372,7 +435,7 @@ if st.button("Analyze match list  →", type="primary", use_container_width=True
             st.session_state.run_id = st.session_state.get("run_id", 0) + 1
             st.success(f"Research completed for {len(output)} matches. Check the evidence below.")
     except (ValueError, UnicodeDecodeError, pd.errors.ParserError) as err:
-        st.error(f"Unable to read match list: {err}")
+        st.error(f"Unable to analyze fixture list: {err}")
 
 if "analysis" not in st.session_state:
     st.markdown("""<div class="bw-footer">BLACK WOLF · EVIDENCE OVER HYPE · NO AUTOMATED WAGER PLACEMENT<br>
